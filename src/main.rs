@@ -88,17 +88,14 @@ async fn send_data(data: String, id: Option<String>) -> Result<(), Box<dyn std::
 }
 
 
-async fn retrieve_data(id: &str, output_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+async fn retrieve_data(id: &str) -> Result<String, Box<dyn std::error::Error>> {
     let url = format!("https://api.stagb.in/dev/content/{}", id);
     let response = reqwest::get(&url).await?;
     let data_items: Vec<DataItem> = response.json().await?;
 
     for item in data_items {
         if item.id == id {
-            let mut file = File::create(output_path)?;
-            file.write_all(item.data.as_bytes())?;
-            println!("File saved to {:?}", output_path);
-            return Ok(());
+            return Ok(item.data);
         }
     }
 
@@ -124,15 +121,25 @@ async fn main() {
 
         send_data(data_content, opt.id).await.unwrap();
     } else if opt.retrieve {
-        if let Some(id) = opt.id {
-            let output_path = opt.output.unwrap_or_else(|| {
-                let default_filename = format!("{}.txt", id);
-                std::path::PathBuf::from(default_filename)
-            });
-            retrieve_data(&id, &output_path).await.unwrap();
-        } else {
-            eprintln!("ID is required for retrieval.");
+        let id = opt.id.unwrap_or_else(|| {
+            eprintln!("ID is required for retrieval. Use -i or --id to specify the ID.");
             std::process::exit(1);
+        });
+
+        match retrieve_data(&id).await {
+            Ok(content) => {
+                if let Some(output_path) = opt.output {
+                    let mut file = File::create(&output_path).expect("Unable to create file");
+                    file.write_all(content.as_bytes()).expect("Unable to write to file");
+                    println!("File saved to {:?}", output_path);
+                } else {
+                    println!("{}", content);
+                }
+            },
+            Err(e) => {
+                eprintln!("Error retrieving data: {}", e);
+                std::process::exit(1);
+            }
         }
     } else {
         eprintln!("Invalid action. Use -s to send data or -r to retrieve data.");

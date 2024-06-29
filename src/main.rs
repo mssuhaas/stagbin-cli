@@ -3,12 +3,11 @@ use reqwest::Client;
 use serde::Serialize;
 use std::fs::File;
 use std::io::Read;
-use std::path::Path;
 use tokio;
 use serde::Deserialize;
 use std::io::Write;
 
-
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 struct DataItem {
     ttl: Option<u64>,
@@ -38,6 +37,10 @@ struct Opt {
 
     #[structopt(short, long, parse(from_os_str))]
     output: Option<std::path::PathBuf>,
+
+    #[structopt(short = "e", long, default_value = "7d")]
+    expire: String,
+
 }
 
 #[derive(Serialize)]
@@ -46,16 +49,38 @@ struct Payload {
     #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<String>,
     is_encrypted: bool,
-    expire: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expire: Option<u64>,
 }
 
-async fn send_data(data: String, id: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+
+fn parse_expire(expire: &str) -> Option<u64> {
+    if expire == "n" {
+        return None;
+    }
+
+    let (num, unit) = expire.split_at(expire.len() - 1);
+    let num: u64 = match num.parse() {
+        Ok(n) => n,
+        Err(_) => return Some(604800), // Default to 7 days if parsing fails
+    };
+
+    match unit {
+        "d" => Some(num * 86400),
+        "w" => Some(num * 7 * 86400),
+        "m" => Some(num * 30 * 86400), // Approximating a month to 30 days
+        _ => Some(604800), // Default to 7 days for invalid units
+    }
+}
+
+
+async fn send_data(data: String, id: Option<String>, expire: Option<u64>) -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::new();
     let payload = Payload {
         data,
         id,
         is_encrypted: false,
-        expire: 604800,
+        expire,
     };
 
     let res = client.post("https://api.stagb.in/dev/content")
@@ -64,9 +89,8 @@ async fn send_data(data: String, id: Option<String>) -> Result<(), Box<dyn std::
         .await?;
 
     let status = res.status();
-    if status.is_success() { // Check for successful status codes (200s)
+    if status.is_success() {
         let response_text = res.text().await?;
-        // Assuming the response contains the ID in JSON format
         if let Ok(json_data) = serde_json::from_str::<serde_json::Value>(&response_text) {
             if let Some(id_value) = json_data.get("id") {
                 if let Some(id_str) = id_value.as_str() {
@@ -86,7 +110,6 @@ async fn send_data(data: String, id: Option<String>) -> Result<(), Box<dyn std::
 
     Ok(())
 }
-
 
 async fn retrieve_data(id: &str) -> Result<String, Box<dyn std::error::Error>> {
     let url = format!("https://api.stagb.in/dev/content/{}", id);
@@ -119,7 +142,8 @@ async fn main() {
             std::process::exit(1);
         }
 
-        send_data(data_content, opt.id).await.unwrap();
+        let expire = parse_expire(&opt.expire);
+        send_data(data_content, opt.id, expire).await.unwrap();
     } else if opt.retrieve {
         let id = opt.id.unwrap_or_else(|| {
             eprintln!("ID is required for retrieval. Use -i or --id to specify the ID.");
